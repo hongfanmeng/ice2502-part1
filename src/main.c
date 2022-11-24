@@ -19,6 +19,7 @@
  */
 #define SYSTICK_FREQUENCY 50  // SysTick freq 50 Hz
 #define SYSTICK_PERIOD_MS 20  // SysTick period 20ms
+#define QUEUE_SIZE 128        // Queue size
 
 /**
  * functions
@@ -28,23 +29,24 @@ void ADCInit(void);
 void SysTickInit(void);
 void DevicesInit(void);
 void SysTickHandler(void);
-uint32_t ADCSample(void);
+uint32_t ADCSampleCurrent(void);
+uint32_t ADCSampleVoltage(void);
 
 /**
  * variables
  */
 
 // counters
-volatile uint8_t clock40ms = 0, clock100ms = 0, clock500ms = 0;
-volatile uint8_t clock40msFlag = 0, clock100msFlag = 0, clock500msFlag = 0;
+volatile uint8_t clock100ms = 0;
+volatile uint8_t clock100msFlag = 0;
 
 /**
  * digit: 7seg display numbers
  * pnt:   7seg dot display with bit flag, 1=on, 0=off
- * 7seg on board with order 4,5,6,7 0,1,2,3
+ * 7seg on board with order 4,5,6,7, 0,1,2,3
  */
 uint8_t digit[8] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
-uint8_t pnt = 0x1;
+uint8_t pnt = 0x11;
 
 /**
  * LED status on baord
@@ -56,42 +58,51 @@ uint8_t led[] = {0, 0, 0, 0, 0, 0, 0, 0};
 // system clock freq
 uint32_t ui32SysClock;
 
-// ADC0 sampling value (0 - 4095) -> 0V - 3.3V
-uint32_t ui32ADC0Value;
-
-// ADC0 voltage, 0000 - 3300 (0.000, 3.300)
-uint32_t ui32ADC0Voltage;
+// voltage and current queue avg
+uint32_t voltQue[QUEUE_SIZE], voltSum = 0, vpos = 0;
+uint32_t currQue[QUEUE_SIZE], currSum = 0, cpos = 0;
 
 int main(void) {
   DevicesInit();
 
   // delay wait for TM1638 ready, wait for 60ms
-  // while (clock100ms < 3)
-  // ;
-  SysCtlDelay(ui32SysClock / 1000 * 60);
+  while (clock100ms < 3)
+    ;
 
   TM1638_Init();
 
   while (1) {
-    // check 500ms counter
-    if (clock500msFlag == 1) {
-      clock500msFlag = 0;
+    // calc voltage avg of past QUEUE_SIZE samples
+    voltQue[vpos++] = ADCSampleVoltage();
+    voltSum += voltQue[vpos - 1];
+    voltSum -= voltQue[vpos % QUEUE_SIZE];
+    vpos %= QUEUE_SIZE;
+    uint32_t volt = voltSum / QUEUE_SIZE;
 
-      ui32ADC0Value = ADCSample();
+    // convert ADC to voltage
+    volt = volt * 1629 / 1000;
 
-      // convert sampling value to 7seg
-      digit[4] = ui32ADC0Value / 1000;      // 显示ADC采样值千位数
-      digit[5] = ui32ADC0Value / 100 % 10;  // 显示ADC采样值百位数
-      digit[6] = ui32ADC0Value / 10 % 10;   // 显示ADC采样值十位数
-      digit[7] = ui32ADC0Value % 10;        // 显示ADC采样值个位数
+    digit[4] = volt / 1000;
+    digit[5] = volt / 100 % 10;
+    digit[6] = volt / 10 % 10;
+    digit[7] = volt % 10;
 
-      ui32ADC0Voltage = ui32ADC0Value * 3300 / 4095;
+    // calc current avg of past QUEUE_SIZE samples
+    currQue[cpos++] = ADCSampleCurrent();
+    currSum += currQue[cpos - 1];
+    currSum -= currQue[cpos % QUEUE_SIZE];
+    cpos %= QUEUE_SIZE;
+    uint32_t curr = currSum / QUEUE_SIZE;
 
-      digit[0] = (ui32ADC0Voltage / 1000) % 10;  // 显示电压值个位数
-      digit[1] = (ui32ADC0Voltage / 100) % 10;   // 显示电压值个位数
-      digit[2] = (ui32ADC0Voltage / 10) % 10;    // 显示电压值十分位数
-      digit[3] = ui32ADC0Voltage % 10;           // 显示电压值百分位数
-    }
+    // convert ADC output to current
+    curr = curr * 803 / 1000;
+    // avoid overflow
+    curr -= curr <= 22 ? curr : 22;
+
+    digit[0] = (curr / 1000) % 10;
+    digit[1] = (curr / 100) % 10;
+    digit[2] = (curr / 10) % 10;
+    digit[3] = curr % 10;
   }
 }
 
@@ -125,48 +136,96 @@ void ADCInit(void) {
   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
   GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_0 | GPIO_PIN_1);
 
-  // config ADC0, single sampling
-  ADCSequenceConfigure(ADC0_BASE, 3, ADC_TRIGGER_PROCESSOR, 0);
-  // config ADC0, sequencer 3, channel 2, PE1
-  ADCSequenceStepConfigure(ADC0_BASE, 3, 0,
-                           ADC_CTL_CH2 | ADC_CTL_IE | ADC_CTL_END);
+  // set 64x hardware over sampling for ADC0
+  ADCHardwareOversampleConfigure(ADC0_BASE, 64);
 
-  // enable ADC0 sample sequence 3
-  ADCSequenceEnable(ADC0_BASE, 3);
+  // config ADC0, single sampling for sequencer 0, 1
+  ADCSequenceConfigure(ADC0_BASE, 0, ADC_TRIGGER_PROCESSOR, 0);
+  ADCSequenceConfigure(ADC0_BASE, 1, ADC_TRIGGER_PROCESSOR, 1);
+
+  // set 8x software over sampling for ADC0, sequencer 0
+  ADCSoftwareOversampleConfigure(ADC0_BASE, 0, 8);
+  // set 4x software over sampling for ADC0, sequencer 1
+  ADCSoftwareOversampleConfigure(ADC0_BASE, 1, 4);
+
+  // config ADC0
+  // sequencer 0, channel 3, PE0, current
+  // sequencer 1, channel 2, PE1, voltage
+  ADCSoftwareOversampleStepConfigure(ADC0_BASE, 0, 0,
+                                     ADC_CTL_CH3 | ADC_CTL_IE | ADC_CTL_END);
+  ADCSoftwareOversampleStepConfigure(ADC0_BASE, 1, 0,
+                                     ADC_CTL_CH2 | ADC_CTL_IE | ADC_CTL_END);
+
+  // enable ADC0 sample sequence 0, 1
+  ADCSequenceEnable(ADC0_BASE, 0);
+  ADCSequenceEnable(ADC0_BASE, 1);
 
   // clear interrupt flag before sampling
-  ADCIntClear(ADC0_BASE, 3);
+  ADCIntClear(ADC0_BASE, 0);
+  ADCIntClear(ADC0_BASE, 1);
 }
 
 /**
- * @brief ADC sampling
+ * @brief ADC sampling for current
  *
- * @return uint32_t the value of ADC sampling [0-4095]
+ * @return uint32_t, the value of ADC sampling of current [0-4095]
  */
-uint32_t ADCSample(void) {
-  //
-  // This array is used for storing the data read from the ADC FIFO. It
-  // must be as large as the FIFO for the sequencer in use.  This example
-  // uses sequence 3 which has a FIFO depth of 1.  If another sequence
-  // was used with a deeper FIFO, then the array size must be changed.
-  //
-  uint32_t pui32ADC0Value[1];
+uint32_t ADCSampleCurrent(void) {
+  uint32_t pui32ADC0Value[8];
 
   // trigger adc sampling
-  ADCProcessorTrigger(ADC0_BASE, 3);
+  ADCProcessorTrigger(ADC0_BASE, 0);
 
   // wait for sampling
-  while (!ADCIntStatus(ADC0_BASE, 3, false)) {
+  while (!ADCIntStatus(ADC0_BASE, 0, false)) {
   }
 
   // clear interrupt flag
-  ADCIntClear(ADC0_BASE, 3);
+  ADCIntClear(ADC0_BASE, 0);
 
   // read adc sampling value
-  ADCSequenceDataGet(ADC0_BASE, 3, pui32ADC0Value);
+  ADCSoftwareOversampleDataGet(ADC0_BASE, 0, pui32ADC0Value, 8);
+
+  // get the avg value
+  uint32_t ADC0Sum = 0;
+  for (int i = 0; i < 8; i++) {
+    ADC0Sum += pui32ADC0Value[i];
+  }
 
   // return adc sampling value
-  return pui32ADC0Value[0];
+  return ADC0Sum >> 3;
+}
+
+/**
+ * @brief ADC sampling for voltage
+ *
+ * @return uint32_t, the value of ADC sampling of voltage [0-4095]
+ */
+uint32_t ADCSampleVoltage(void) {
+  uint32_t pui32ADC0Value[4];
+
+  // trigger adc sampling
+  ADCProcessorTrigger(ADC0_BASE, 1);
+
+  // wait for sampling
+  while (!ADCIntStatus(ADC0_BASE, 1, false)) {
+  }
+
+  // clear interrupt flag
+  ADCIntClear(ADC0_BASE, 1);
+
+  // read adc sampling value
+  ADCSoftwareOversampleDataGet(ADC0_BASE, 1, pui32ADC0Value, 4);
+
+  // get the avg value
+  uint32_t ADC0Sum = 0;
+  for (int i = 0; i < 4; i++) {
+    ADC0Sum += pui32ADC0Value[i];
+  }
+
+  // return adc sampling value
+  // return (ADC0Sum * 6615) >> 14;
+  return ADC0Sum >> 2;
 }
 
 /**
@@ -203,15 +262,11 @@ void DevicesInit(void) {
  *
  */
 void SysTickHandler(void) {
-  // stop counter when clock reach max value
-  clock40msFlag = clock40ms >= 2;
-  clock100msFlag = clock100ms >= 5;
-  clock500msFlag = clock500ms >= 50;
-
-  // start counter when flag == 0;
-  clock40ms += clock40msFlag == 0;
-  clock100ms += clock100msFlag == 0;
-  clock500ms += clock500msFlag == 0;
+  // counters
+  if (++clock100ms >= 5) {
+    clock100msFlag = 1;
+    clock100ms = 0;
+  }
 
   // refresh 7seg and led
   TM1638_RefreshDIGIandLED(digit, pnt, led);
