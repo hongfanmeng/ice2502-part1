@@ -9,6 +9,7 @@
 #include "driverlib/rom_map.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/systick.h"
+#include "drivers/pinout.h"
 #include "inc/hw_memmap.h"
 #include "inc/hw_types.h"
 #include "tm1638.h"
@@ -16,10 +17,9 @@
 /**
  * defines
  */
-#define SYSTICK_FREQUENCY 50  // SysTick freq 50 Hz, 20ms
+#define SYSTICK_FREQUENCY 50  // SysTick freq 50 Hz
+#define SYSTICK_PERIOD_MS 20  // SysTick period 20ms
 
-#define V_T40ms 2   // 40ms = 2 * 20ms
-#define V_T100ms 5  // 0.1s = 5 * 20ms
 /**
  * functions
  */
@@ -34,13 +34,9 @@ uint32_t ADCSample(void);
  * variables
  */
 
-// software counter
-uint8_t clock40ms = 0;
-uint8_t clock100ms = 0;
-
-// software counter overflow flag
-uint8_t clock40ms_flag = 0;
-uint8_t clock100ms_flag = 0;
+// counters
+volatile uint8_t clock40ms = 0, clock100ms = 0, clock500ms = 0;
+volatile uint8_t clock40msFlag = 0, clock100msFlag = 0, clock500msFlag = 0;
 
 /**
  * digit: 7seg display numbers
@@ -48,39 +44,38 @@ uint8_t clock100ms_flag = 0;
  * 7seg on board with order 4,5,6,7 0,1,2,3
  */
 uint8_t digit[8] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
-uint8_t pnt = 0x2;
+uint8_t pnt = 0x1;
 
 /**
  * LED status on baord
  * 0=off, 1=on
- * LED8 to LED1
+ * LED1 to LED8
  */
 uint8_t led[] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 // system clock freq
 uint32_t ui32SysClock;
 
-// ADC0 sampling value (0 - 4095)
+// ADC0 sampling value (0 - 4095) -> 0V - 3.3V
 uint32_t ui32ADC0Value;
 
 // ADC0 voltage, 0000 - 3300 (0.000, 3.300)
 uint32_t ui32ADC0Voltage;
 
 int main(void) {
-  uint8_t temp, i;
-
   DevicesInit();
 
-  // delay wait for TM1638 ready
-  while (clock100ms < 3)
-    ;
+  // delay wait for TM1638 ready, wait for 60ms
+  // while (clock100ms < 3)
+  // ;
+  SysCtlDelay(ui32SysClock / 1000 * 60);
 
   TM1638_Init();
 
   while (1) {
-    // check 40ms counter
-    if (clock40ms_flag == 1) {
-      clock40ms = 0;
+    // check 500ms counter
+    if (clock500msFlag == 1) {
+      clock500msFlag = 0;
 
       ui32ADC0Value = ADCSample();
 
@@ -90,11 +85,12 @@ int main(void) {
       digit[6] = ui32ADC0Value / 10 % 10;   // 显示ADC采样值十位数
       digit[7] = ui32ADC0Value % 10;        // 显示ADC采样值个位数
 
-      ui32ADC0Voltage = ui32ADC0Value * 330 / 4095;
+      ui32ADC0Voltage = ui32ADC0Value * 3300 / 4095;
 
-      digit[1] = (ui32ADC0Voltage / 100) % 10;  // 显示电压值个位数
-      digit[2] = (ui32ADC0Voltage / 10) % 10;   // 显示电压值十分位数
-      digit[3] = ui32ADC0Voltage % 10;          // 显示电压值百分位数
+      digit[0] = (ui32ADC0Voltage / 1000) % 10;  // 显示电压值个位数
+      digit[1] = (ui32ADC0Voltage / 100) % 10;   // 显示电压值个位数
+      digit[2] = (ui32ADC0Voltage / 10) % 10;    // 显示电压值十分位数
+      digit[3] = ui32ADC0Voltage % 10;           // 显示电压值百分位数
     }
   }
 }
@@ -125,13 +121,13 @@ void ADCInit(void) {
   // enable ADC0
   SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);
 
-  // use PE1 as ADC input
+  // set PE0, PE1 as ADC input
   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
-  GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_1);
+  GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_0 | GPIO_PIN_1);
 
-  // single sampling(sample sequence 3 mode)
+  // config ADC0, single sampling
   ADCSequenceConfigure(ADC0_BASE, 3, ADC_TRIGGER_PROCESSOR, 0);
-
+  // config ADC0, sequencer 3, channel 2, PE1
   ADCSequenceStepConfigure(ADC0_BASE, 3, 0,
                            ADC_CTL_CH2 | ADC_CTL_IE | ADC_CTL_END);
 
@@ -178,7 +174,7 @@ uint32_t ADCSample(void) {
  *
  */
 void SysTickInit(void) {
-  SysTickIntRegister(SystickHandler);
+  SysTickIntRegister(SysTickHandler);
   SysTickPeriodSet(ui32SysClock /
                    SYSTICK_FREQUENCY);  // set SysTick interrupt period 20ms
   SysTickEnable();                      // enable systick
@@ -195,7 +191,7 @@ void DevicesInit(void) {
   ui32SysClock = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN |
                                      SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
                                     20000000);
-
+  PinoutSet(false, false);
   GPIOInit();         // GPIO initialization
   ADCInit();          // ADC initialization
   SysTickInit();      // SysTick initialization
@@ -206,7 +202,17 @@ void DevicesInit(void) {
  * @brief SysTick interrupt handler
  *
  */
-void SystickHandler(void) {
+void SysTickHandler(void) {
+  // stop counter when clock reach max value
+  clock40msFlag = clock40ms >= 2;
+  clock100msFlag = clock100ms >= 5;
+  clock500msFlag = clock500ms >= 50;
+
+  // start counter when flag == 0;
+  clock40ms += clock40msFlag == 0;
+  clock100ms += clock100msFlag == 0;
+  clock500ms += clock500msFlag == 0;
+
   // refresh 7seg and led
   TM1638_RefreshDIGIandLED(digit, pnt, led);
 }
