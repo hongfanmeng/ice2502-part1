@@ -59,7 +59,7 @@ uint8_t digit[8] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
 uint8_t pnt = 0x11;
 
 /**
- * LED status on baord
+ * LED status on board
  * 0=off, 1=on
  * LED1 to LED8
  */
@@ -69,9 +69,15 @@ uint8_t led[] = {0, 0, 0, 0, 0, 0, 0, 0};
 uint32_t ui32SysClock;
 
 // voltage and current queue avg
-uint32_t voltQue[QUEUE_SIZE], voltSum = 0, vpos = 0;
-uint32_t currQue[QUEUE_SIZE], currSum = 0, cpos = 0;
+uint32_t voltQue[QUEUE_SIZE], voltSum = 0, vPos = 0;
+uint32_t currQue[QUEUE_SIZE], currSum = 0, cPos = 0;
 
+/**
+ * @brief main function, init device and sampling voltage and current
+ * repeatedly, use a queue with QUEUE_SIZE to calc the avg value
+ *
+ * @return 0
+ */
 int main(void) {
   DevicesInit();
 
@@ -83,25 +89,26 @@ int main(void) {
 
   while (1) {
     // calc voltage avg of past QUEUE_SIZE samples
-    voltQue[vpos++] = ADCSampleVoltage();
-    voltSum += voltQue[vpos - 1];
-    voltSum -= voltQue[vpos % QUEUE_SIZE];
-    vpos %= QUEUE_SIZE;
+    voltQue[vPos++] = ADCSampleVoltage();
+    voltSum += voltQue[vPos - 1];
+    voltSum -= voltQue[vPos % QUEUE_SIZE];
+    vPos %= QUEUE_SIZE;
     uint32_t volt = voltSum / QUEUE_SIZE;
 
     // convert ADC to voltage
     volt = volt * 1629 / 1000;
 
+    // display voltage to 7seg
     digit[4] = volt / 1000;
     digit[5] = volt / 100 % 10;
     digit[6] = volt / 10 % 10;
     digit[7] = volt % 10;
 
     // calc current avg of past QUEUE_SIZE samples
-    currQue[cpos++] = ADCSampleCurrent();
-    currSum += currQue[cpos - 1];
-    currSum -= currQue[cpos % QUEUE_SIZE];
-    cpos %= QUEUE_SIZE;
+    currQue[cPos++] = ADCSampleCurrent();
+    currSum += currQue[cPos - 1];
+    currSum -= currQue[cPos % QUEUE_SIZE];
+    cPos %= QUEUE_SIZE;
     uint32_t curr = currSum / QUEUE_SIZE;
 
     // convert ADC output to current
@@ -109,11 +116,13 @@ int main(void) {
     // avoid overflow
     curr -= curr <= 22 ? curr : 22;
 
+    // display current to 7seg
     digit[0] = (curr / 1000) % 10;
     digit[1] = (curr / 100) % 10;
     digit[2] = (curr / 10) % 10;
     digit[3] = curr % 10;
   }
+  return 0;
 }
 
 /**
@@ -135,7 +144,7 @@ void GPIOInit(void) {
   GPIOPinTypeGPIOOutput(GPIO_PORTM_BASE, GPIO_PIN_0);
 }
 /**
- * @brief Initialize ADC moudule
+ * @brief Initialize ADC module
  *
  */
 void ADCInit(void) {
