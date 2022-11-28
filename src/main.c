@@ -1,3 +1,13 @@
+/**
+ * @file main.c
+ * @author Steven Hong
+ * @brief This is code for ICE2502 part 1
+ * @version 0.1
+ * @date 2022-11-28
+ *
+ * @copyright Copyright (c) 2022
+ *
+ */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -171,7 +181,7 @@ void ADCInit(void) {
  * @return uint32_t, the value of ADC sampling of current [0-4095]
  */
 uint32_t ADCSampleCurrent(void) {
-  uint32_t pui32ADC0Value[8];
+  uint32_t pui32Buffer[8];
 
   // trigger adc sampling
   ADCProcessorTrigger(ADC0_BASE, 0);
@@ -184,12 +194,12 @@ uint32_t ADCSampleCurrent(void) {
   ADCIntClear(ADC0_BASE, 0);
 
   // read adc sampling value
-  ADCSoftwareOversampleDataGet(ADC0_BASE, 0, pui32ADC0Value, 8);
+  ADCSoftwareOversampleDataGet(ADC0_BASE, 0, pui32Buffer, 8);
 
   // get the avg value
   uint32_t ADC0Sum = 0;
   for (int i = 0; i < 8; i++) {
-    ADC0Sum += pui32ADC0Value[i];
+    ADC0Sum += pui32Buffer[i];
   }
 
   // return adc sampling value
@@ -202,7 +212,7 @@ uint32_t ADCSampleCurrent(void) {
  * @return uint32_t, the value of ADC sampling of voltage [0-4095]
  */
 uint32_t ADCSampleVoltage(void) {
-  uint32_t pui32ADC0Value[4];
+  uint32_t pui32Buffer[4];
 
   // trigger adc sampling
   ADCProcessorTrigger(ADC0_BASE, 1);
@@ -215,12 +225,12 @@ uint32_t ADCSampleVoltage(void) {
   ADCIntClear(ADC0_BASE, 1);
 
   // read adc sampling value
-  ADCSoftwareOversampleDataGet(ADC0_BASE, 1, pui32ADC0Value, 4);
+  ADCSoftwareOversampleDataGet(ADC0_BASE, 1, pui32Buffer, 4);
 
   // get the avg value
   uint32_t ADC0Sum = 0;
   for (int i = 0; i < 4; i++) {
-    ADC0Sum += pui32ADC0Value[i];
+    ADC0Sum += pui32Buffer[i];
   }
 
   // return adc sampling value
